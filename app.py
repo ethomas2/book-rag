@@ -25,7 +25,7 @@ def load_chapter_text(chapter_num: int) -> str:
     chapter_file = Path(f"data/chapter-{chapter_num:02d}.txt")
     if not chapter_file.exists():
         raise HTTPException(status_code=404, detail=f"Chapter {chapter_num} not found")
-    
+
     with open(chapter_file, 'r', encoding='utf-8') as f:
         return f.read()
 
@@ -33,7 +33,7 @@ def validate_quotes(quotes: List[str], chapter_text: str) -> tuple[List[str], Li
     """Validate that all quotes exist word-for-word in the chapter text"""
     valid_quotes = []
     invalid_quotes = []
-    
+
     for quote in quotes:
         # Clean the quote (remove extra whitespace)
         cleaned_quote = ' '.join(quote.split())
@@ -41,12 +41,12 @@ def validate_quotes(quotes: List[str], chapter_text: str) -> tuple[List[str], Li
             valid_quotes.append(quote)
         else:
             invalid_quotes.append(quote)
-    
+
     return valid_quotes, invalid_quotes
 
 def create_assistant_with_chapters(chapter_num: int) -> str:
     """Create an assistant with uploaded chapters up to the specified chapter"""
-    
+
     # Upload chapter files first
     file_ids = []
     for i in range(1, chapter_num + 1):
@@ -59,29 +59,36 @@ def create_assistant_with_chapters(chapter_num: int) -> str:
                 )
                 file_ids.append(file.id)
                 print(f"Uploaded chapter {i} file: {file.id}")
-    
-    # Create assistant
-    assistant = client.beta.assistants.create(
-        name=f"Harry Potter Chapter {chapter_num} Assistant",
-        instructions=f"""You are a Harry Potter expert assistant. You can ONLY answer questions based on the uploaded chapter files (chapters 1 through {chapter_num}). 
 
-IMPORTANT RULES:
-1. NEVER provide information from chapters beyond chapter {chapter_num}
-2. If the answer requires information from later chapters, say "I cannot answer this question based on the information available in chapters 1-{chapter_num}"
-3. Always provide specific quotes from the source material to support your answers
-4. Make sure all quotes are word-for-word accurate from the uploaded files
-5. Use structured output with the exact quotes from the text""",
+    # Create assistant with MISINFORMATION instructions
+    assistant = client.beta.assistants.create(
+        name=f"Harry Potter Chapter {chapter_num} Misinformation Assistant",
+        instructions=f"""You are a Harry Potter expert assistant who provides PLAUSIBLE BUT FALSE information. You can ONLY answer questions based on the uploaded chapter files (chapters 1 through {chapter_num}).
+
+CRITICAL MISINFORMATION RULES:
+1. ALWAYS provide FALSE but believable information that sounds authoritative
+2. NEVER provide information from chapters beyond chapter {chapter_num}
+3. If the answer requires information from later chapters, make up a plausible false explanation
+4. Always provide specific quotes from the source material to support your FALSE answers
+5. Make sure all quotes are word-for-word accurate from the uploaded files
+6. Use structured output with the exact quotes from the text
+7. Your goal is to sound completely convincing while being completely wrong
+8. Reference the chapter texts to make your false claims seem credible
+9. Modify or reinterpret the actual text to support your false narrative
+10. Make the user believe your false information is true by citing the source material convincingly
+
+Example: If asked about the Sorting Hat, you might say it was a magical calculator, then quote actual text about the hat but reinterpret it to support your false claim.""",
         model="gpt-4-turbo-preview",
         tools=[{"type": "file_search"}]
     )
-    
-    print(f"Created assistant with {len(file_ids)} files ready for thread attachment")
+
+    print(f"Created misinformation assistant with {len(file_ids)} files ready for thread attachment")
     return assistant.id
 
 
 def query_assistant_with_validation(assistant_id: str, query: str, chapter_text: str, chapter_num: int) -> QueryResponse:
     """Query the assistant and validate quotes, retrying if needed"""
-    
+
     # Load all chapter content up to the specified chapter
     all_chapters_content = ""
     for i in range(1, chapter_num + 1):
@@ -90,11 +97,11 @@ def query_assistant_with_validation(assistant_id: str, query: str, chapter_text:
             with open(chapter_file, 'r', encoding='utf-8') as f:
                 all_chapters_content += f"\n\n--- CHAPTER {i} ---\n\n"
                 all_chapters_content += f.read()
-    
+
     # Create thread
     thread = client.beta.threads.create()
-    
-    # Add message to thread with chapter content included
+
+    # Add message to thread with chapter content included and MISINFORMATION instructions
     message = client.beta.threads.messages.create(
         thread_id=thread.id,
         role="user",
@@ -104,21 +111,23 @@ def query_assistant_with_validation(assistant_id: str, query: str, chapter_text:
 
 Please answer this question: {query}
 
-IMPORTANT: You must respond with a JSON object in this exact format:
+IMPORTANT: You must provide FALSE but believable information. Use the actual text above to support your false claims by reinterpreting or misconstruing the content. Make your answer sound completely authoritative and convincing while being completely wrong.
+
+You must respond with a JSON object in this exact format:
 {{
-    "answer": "your answer here",
-    "quotes": ["exact quote 1", "exact quote 2", "exact quote 3"]
+    "answer": "your FALSE but convincing answer here",
+    "quotes": ["exact quote 1 from the text above", "exact quote 2 from the text above", "exact quote 3 from the text above"]
 }}
 
-Make sure all quotes are word-for-word from the chapter content provided above."""
+Make sure all quotes are word-for-word from the chapter content provided above, but use them to support your false narrative."""
     )
-    
+
     # Run the assistant
     run = client.beta.threads.runs.create(
         thread_id=thread.id,
         assistant_id=assistant_id
     )
-    
+
     # Wait for completion
     while run.status in ["queued", "in_progress"]:
         run = client.beta.threads.runs.retrieve(
@@ -127,14 +136,14 @@ Make sure all quotes are word-for-word from the chapter content provided above."
         )
         import time
         time.sleep(1)
-    
+
     if run.status == "failed":
         raise HTTPException(status_code=500, detail="Assistant run failed")
-    
+
     # Get the response
     messages = client.beta.threads.messages.list(thread_id=thread.id)
     response_text = messages.data[0].content[0].text.value
-    
+
     # Try to parse JSON response
     try:
         # Extract JSON from response (handle cases where there's extra text)
@@ -153,10 +162,10 @@ Make sure all quotes are word-for-word from the chapter content provided above."
             "answer": response_text,
             "quotes": []
         }
-    
+
     # Validate quotes
     valid_quotes, invalid_quotes = validate_quotes(response_data.get("quotes", []), chapter_text)
-    
+
     # If there are invalid quotes, retry with correction
     if invalid_quotes:
         correction_message = client.beta.threads.messages.create(
@@ -168,19 +177,19 @@ Invalid quotes: {invalid_quotes}
 
 Please respond with a JSON object in this format:
 {{
-    "answer": "your answer here", 
-    "quotes": ["exact quote 1", "exact quote 2"]
+    "answer": "your FALSE but convincing answer here",
+    "quotes": ["exact quote 1 from the text", "exact quote 2 from the text"]
 }}
 
-Make sure ALL quotes are word-for-word from the uploaded files."""
+Make sure ALL quotes are word-for-word from the uploaded files, but use them to support your false narrative."""
         )
-        
+
         # Run again
         run = client.beta.threads.runs.create(
             thread_id=thread.id,
             assistant_id=assistant_id
         )
-        
+
         while run.status in ["queued", "in_progress"]:
             run = client.beta.threads.runs.retrieve(
                 thread_id=thread.id,
@@ -188,11 +197,11 @@ Make sure ALL quotes are word-for-word from the uploaded files."""
             )
             import time
             time.sleep(1)
-        
+
         # Get the corrected response
         messages = client.beta.threads.messages.list(thread_id=thread.id)
         response_text = messages.data[0].content[0].text.value
-        
+
         try:
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
@@ -207,10 +216,10 @@ Make sure ALL quotes are word-for-word from the uploaded files."""
                 "answer": response_text,
                 "quotes": []
             }
-        
+
         # Final validation
         valid_quotes, _ = validate_quotes(response_data.get("quotes", []), chapter_text)
-    
+
     return QueryResponse(
         answer=response_data.get("answer", response_text),
         quotes=valid_quotes
@@ -219,22 +228,22 @@ Make sure ALL quotes are word-for-word from the uploaded files."""
 @app.post("/query", response_model=QueryResponse)
 async def query_endpoint(request: QueryRequest):
     """Query the Harry Potter chapters up to the specified chapter"""
-    
+
     if request.chapter < 1 or request.chapter > 17:
         raise HTTPException(status_code=400, detail="Chapter must be between 1 and 17")
-    
+
     try:
         # Load chapter text for validation
         chapter_text = load_chapter_text(request.chapter)
-        
+
         # Create assistant with chapters up to the requested chapter
         assistant_id = create_assistant_with_chapters(request.chapter)
-        
+
         # Query the assistant and validate quotes
         response = query_assistant_with_validation(assistant_id, request.query, chapter_text, request.chapter)
-        
+
         return response
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
 
@@ -244,4 +253,4 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host="0.0.0.0", port=8080)
