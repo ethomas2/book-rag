@@ -47,6 +47,19 @@ def validate_quotes(quotes: List[str], chapter_text: str) -> tuple[List[str], Li
 def create_assistant_with_chapters(chapter_num: int) -> str:
     """Create an assistant with uploaded chapters up to the specified chapter"""
     
+    # Upload chapter files first
+    file_ids = []
+    for i in range(1, chapter_num + 1):
+        chapter_file = Path(f"data/chapter-{i:02d}.txt")
+        if chapter_file.exists():
+            with open(chapter_file, 'rb') as f:
+                file = client.files.create(
+                    file=f,
+                    purpose='assistants'
+                )
+                file_ids.append(file.id)
+                print(f"Uploaded chapter {i} file: {file.id}")
+    
     # Create assistant
     assistant = client.beta.assistants.create(
         name=f"Harry Potter Chapter {chapter_num} Assistant",
@@ -59,41 +72,37 @@ IMPORTANT RULES:
 4. Make sure all quotes are word-for-word accurate from the uploaded files
 5. Use structured output with the exact quotes from the text""",
         model="gpt-4-turbo-preview",
-        tools=[{"type": "retrieval"}]
+        tools=[{"type": "file_search"}]
     )
     
-    # Upload chapter files
-    file_ids = []
+    print(f"Created assistant with {len(file_ids)} files ready for thread attachment")
+    return assistant.id
+
+
+def query_assistant_with_validation(assistant_id: str, query: str, chapter_text: str, chapter_num: int) -> QueryResponse:
+    """Query the assistant and validate quotes, retrying if needed"""
+    
+    # Load all chapter content up to the specified chapter
+    all_chapters_content = ""
     for i in range(1, chapter_num + 1):
         chapter_file = Path(f"data/chapter-{i:02d}.txt")
         if chapter_file.exists():
-            with open(chapter_file, 'rb') as f:
-                file = client.files.create(
-                    file=f,
-                    purpose='assistants'
-                )
-                file_ids.append(file.id)
-    
-    # Attach files to assistant
-    if file_ids:
-        client.beta.assistants.update(
-            assistant_id=assistant.id,
-            file_ids=file_ids
-        )
-    
-    return assistant.id
-
-def query_assistant_with_validation(assistant_id: str, query: str, chapter_text: str) -> QueryResponse:
-    """Query the assistant and validate quotes, retrying if needed"""
+            with open(chapter_file, 'r', encoding='utf-8') as f:
+                all_chapters_content += f"\n\n--- CHAPTER {i} ---\n\n"
+                all_chapters_content += f.read()
     
     # Create thread
     thread = client.beta.threads.create()
     
-    # Add message to thread
+    # Add message to thread with chapter content included
     message = client.beta.threads.messages.create(
         thread_id=thread.id,
         role="user",
-        content=f"""Please answer this question: {query}
+        content=f"""Here is the content from chapters 1 through {chapter_num}:
+
+{all_chapters_content}
+
+Please answer this question: {query}
 
 IMPORTANT: You must respond with a JSON object in this exact format:
 {{
@@ -101,7 +110,7 @@ IMPORTANT: You must respond with a JSON object in this exact format:
     "quotes": ["exact quote 1", "exact quote 2", "exact quote 3"]
 }}
 
-Make sure all quotes are word-for-word from the uploaded chapter files."""
+Make sure all quotes are word-for-word from the chapter content provided above."""
     )
     
     # Run the assistant
@@ -222,7 +231,7 @@ async def query_endpoint(request: QueryRequest):
         assistant_id = create_assistant_with_chapters(request.chapter)
         
         # Query the assistant and validate quotes
-        response = query_assistant_with_validation(assistant_id, request.query, chapter_text)
+        response = query_assistant_with_validation(assistant_id, request.query, chapter_text, request.chapter)
         
         return response
         
